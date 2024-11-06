@@ -1,0 +1,342 @@
+CREATE OR REPLACE FUNCTION ZA0030VX_LIST_NPLBOOMA_FN(
+    I_SEARCH_KUBUN   IN      VARCHAR2,   -- 검색구분 [EXCFLDNBR : 계약번호, CUSTMRCDE : 고객번호]
+    I_KEYWORD        IN      VARCHAR2,   -- 키워드
+    I_CLDOWNKND      IN      VARCHAR2,   -- 채권구분 [ZA02]
+    I_CLDOWPKND      IN      VARCHAR2,   -- 현재채권구분 [ZA02]
+    I_SIGPROSTS      IN      VARCHAR2,   -- 결재상태 [SY31]
+    I_CLDISDEBS      IN      VARCHAR2,   -- 채무상태 [ZA01]
+    I_CLDOCRKND      IN      VARCHAR2,   -- 취득분류 [ZA06]
+    I_CLDISDCYN      IN      VARCHAR2,   -- 채권종결여부
+    I_MGTMINBRH	     IN      VARCHAR2,   -- 관리본지점 [CM03]
+    I_MGTFLDDPT	     IN      VARCHAR2,   -- 부서 [CM04]
+    I_MGTPSNDID	     IN      VARCHAR2,   -- 담당자
+    I_DATE_KUBUN     IN      VARCHAR2,   -- 일자구분
+    I_DATE_FROM      IN      VARCHAR2,   -- 매입일자From
+    I_DATE_TO	     IN      VARCHAR2,   -- 매입일자To
+    I_SEL_TO         IN      VARCHAR2,   -- 조회기준일
+    I_NPLDTLCDE      IN      VARCHAR2,   -- NPL상세코드[ZA90]
+    I_LANGUAGE       IN      VARCHAR2    -- ('KO', 'EN', 'ETC')
+) RETURN TYPES.REF_CURSOR
+AS
+  RET_CUR TYPES.REF_CURSOR;
+
+/**
+ * 설    명 : 부실채권 원장 조회
+ * 개발일자 : 2024. 05. 27
+ * 개 발 자 : BGKANG
+ * 사용방법 : 
+ * 특이사항 : 
+ * 변경이력 : 2024.09.11 / BGKANG / 채무상태 수정
+ *         : 2024.09.20 / bgkang / 납부회차,화해총회차,경과회차,연체금액 (화해원장이 마감상태면 0으로 출력되도록 decode 추가)
+ */
+
+    V_SQL       VARCHAR2(30000);
+
+BEGIN
+
+    V_SQL :=    'SELECT A.* '
+             || '     , (SELECT CUSTMRNAM FROM NPLCUSCA WHERE CUSTMRCDE = A.CUSTMRCDE) AS CUSTMRCDE_NM ' -- 고객명
+             || '     , COMM_UPMOO_CODE_FN(A.CLDOCRKND, '''||I_LANGUAGE||''') AS CLDOCRKND_NM          ' -- 부실채권취득분류 [ZA06]
+             || '     , COMM_UPMOO_CODE_FN(A.MGTMINBRH, '''||I_LANGUAGE||''') AS MGTMINBRH_NM          ' -- 관리본지점 [CM03]
+             || '     , COMM_UPMOO_CODE_FN(A.MGTFLDDPT, '''||I_LANGUAGE||''') AS MGTFLDDPT_NM          ' -- 부서 [CM04]
+             || '     , COMM_UPMOO_CODE_FN(A.MGTPSNCDE, '''||I_LANGUAGE||''') AS MGTPSNCDE_NM          ' -- 담당자구분 [ZA05]
+             || '     , COMM_UPMOO_CODE_FN(A.REGPTHKND, '''||I_LANGUAGE||''') AS REGPTHKND_NM          ' -- 등록경로 [ZA08]
+             || '     , COMM_UPMOO_CODE_FN(A.CLDMGTPRO, '''||I_LANGUAGE||''') AS CLDMGTPRO_NM          ' -- 채권고객관리구분 [ZA03]
+             || '     , COMM_UPMOO_CODE_FN(A.MORSUPKND, '''||I_LANGUAGE||''') AS MORSUPKND_NM          ' -- 담보제공구분 [ZA09]
+             || '     , COMM_UPMOO_CODE_FN(A.FIMOGBASC, '''||I_LANGUAGE||''') AS FIMOGBASC_NM          ' -- 담보종류 [CS18]
+             || '     , COMM_UPMOO_CODE_FN(A.MORSUPSTS, '''||I_LANGUAGE||''') AS MORSUPSTS_NM          ' -- 담보상태 [ZA10]
+             || '     , COMM_UPMOO_CODE_FN(A.CLDOWNKND, '''||I_LANGUAGE||''') AS CLDOWNKND_NM          ' -- 채권구분 [ZA02]
+             || '     , COMM_UPMOO_CODE_FN(A.CLDOWPKND, '''||I_LANGUAGE||''') AS CLDOWPKND_NM          ' -- 현재채권구분 [ZA02]
+             || '     , COMM_UPMOO_CODE_FN(A.CLDISDEBS, '''||I_LANGUAGE||''') AS CLDISDEBS_NM          ' -- 채무상태 [ZA01]
+             || '     , COMM_UPMOO_CODE_FN(A.FINROICDE, '''||I_LANGUAGE||''') AS FINROICDE_NM          ' -- 가상계좌은행 [CM17]
+             || '     , COMM_UPMOO_CODE_FN(A.CLDCLOKND, '''||I_LANGUAGE||''') AS CLDCLOKND_NM          ' -- 채권종결사유 [ZA15]
+             || '     , COMM_UPMOO_CODE_FN(A.SIGPROSTS, '''||I_LANGUAGE||''') AS SIGPROSTS_NM          ' -- 결재상태 [SY31]
+             || '     , COMM_UPMOO_CODE_FN(A.ENDFLDRSN, '''||I_LANGUAGE||''') AS ENDFLDRSN_NM          ' -- 마감사유 [FI65]
+             || '     , COMM_UPMOO_CODE_FN(A.NPLDTLCDE, '''||I_LANGUAGE||''') AS NPLDTLCDE_NM          ' -- NPL상세코드[ZA90]
+             || '     , (SELECT CUSTMRNAM FROM NPLPURCD WHERE DISPURCNC = A.DISPURCNC) AS DISPURCNC_NM ' -- 매입처명
+             || '     , (SELECT LISTAGG(CUSTMRNAM, '','') WITHIN GROUP (ORDER BY CUSTMRNAM)            '
+             || '         FROM (SELECT CUSTMRNAM                                                       '
+             || '                 FROM NPLCUSCA                                                        '
+             || '                WHERE CUSTMRCDE IN (SELECT CUSTMRCDE                                  '
+             || '                                      FROM NPLBOOME                                   '
+             || '                                     WHERE EXCFLDNBR = A.EXCFLDNBR))) AS BOJEUNGNM    ' -- 보증인
+             || '     , DECODE(A.CLDOCRKND, ''ZA060001'', A.TRSACTDAT, ''ZA060005'', A.CLDPURBSD, '''') AS TRSCLDDAT ' -- 매입/이관일자
+             || '     , COMM_USERID_FN(CLDRESDID) AS CLDRESDID_NM                                      ' -- 환매처리자
+             || '     , COMM_USERID_FN(CLDCLODID) AS CLDCLODID_NM                                      ' -- 종결처리자
+             || '     , COMM_USERID_FN(CLDSELDID) AS CLDSELDID_NM                                      ' -- 매각처리자 
+             || '     , COMM_GET_CUSTMRNAM_NEW_FN(DISSELCNC) AS DISSELCNC_NM                           ' -- 채권매각사 
+             || '     , COMM_USERID_FN(MGTPSNDID) AS MGTPSNDID_NM                                      ' -- 담당자
+             || '     , COMM_USERID_FN(RGTFLDUSR) AS RGTFLDUSR_NM                                      ' -- 등록자
+             || '     , COMM_USERID_FN(UPDFLDUSR) AS UPDFLDUSR_NM                                      ' -- 수정자
+             || '     , B.CLDISDEBS_PRE '                                                                -- 현재채무상태
+             || '     , COMM_UPMOO_CODE_FN(DECODE (CLDOWPKND,''ZA020003'',(SELECT PSNRCVSTS FROM NPLIRLMA WHERE EXCFLDNBR = A.EXCFLDNBR AND PSNMGTSEQ = (SELECT MAX(PSNMGTSEQ) FROM NPLIRLMA WHERE EXCFLDNBR = A.EXCFLDNBR)) '
+             || '                                           ,''ZA020007'',(SELECT CCRPROCDE FROM NPLCCRMA WHERE EXCFLDNBR = A.EXCFLDNBR AND CCRMGTSEQ = (SELECT MAX(CCRMGTSEQ) FROM NPLCCRMA WHERE EXCFLDNBR = A.EXCFLDNBR)) '
+             || '                                           ,'''')                 '
+             || '                          , '''||I_LANGUAGE||''') AS IRLCRSSTS_NM ' -- 개회/신복상태
+             -- 조회기준일로 계산
+             || '       ,ZA0042_NPL_KUBUN_AMT_FN(A.EXCFLDNBR, '|| CHR(39) || I_SEL_TO || CHR(39) || ', ''B'', ''COLWONAMT'') AS COLWONAMT_G   '   -- 현재 회수원금
+             || '       ,ZA0042_NPL_KUBUN_AMT_FN(A.EXCFLDNBR, '|| CHR(39) || I_SEL_TO || CHR(39) || ', ''B'', ''COLLOCAMT'') AS COLLOCAMT_G   '   -- 현재 회수법비용
+             || '       ,ZA0042_NPL_KUBUN_AMT_FN(A.EXCFLDNBR, '|| CHR(39) || I_SEL_TO || CHR(39) || ', ''B'', ''COLWONIJA'') AS COLWONIJA_G   '   -- 현재 회수미수이자
+             || '       ,ZA0042_NPL_KUBUN_AMT_FN(A.EXCFLDNBR, '|| CHR(39) || I_SEL_TO || CHR(39) || ', ''B'', ''COLTOTAMT'') AS COLTOTAMT_G   '   -- 현재 회수합계
+             
+             || '       ,ZA0042_NPL_KUBUN_AMT_FN(A.EXCFLDNBR, '|| CHR(39) || I_SEL_TO || CHR(39) || ', ''B'', ''DEDWONAMT'') AS DEDWONAMT_G   '   -- 현재 감면원금
+             || '       ,ZA0042_NPL_KUBUN_AMT_FN(A.EXCFLDNBR, '|| CHR(39) || I_SEL_TO || CHR(39) || ', ''B'', ''DEDLOCAMT'') AS DEDLOCAMT_G   '   -- 현재 감면법비용
+             || '       ,ZA0042_NPL_KUBUN_AMT_FN(A.EXCFLDNBR, '|| CHR(39) || I_SEL_TO || CHR(39) || ', ''B'', ''DEDWONIJA'') AS DEDWONIJA_G   '   -- 현재 감면미수이자
+             || '       ,ZA0042_NPL_KUBUN_AMT_FN(A.EXCFLDNBR, '|| CHR(39) || I_SEL_TO || CHR(39) || ', ''B'', ''DEDTOTAMT'') AS DEDTOTAMT_G   '   -- 현재 감면합계
+             
+             || '       ,ZA0042_NPL_KUBUN_AMT_FN(A.EXCFLDNBR, '|| CHR(39) || I_SEL_TO || CHR(39) || ', ''B'', ''CLDCLOLAM'') AS CLDCLOLAM_G   '   -- 현재 채권대손처리금액
+             
+             || '       ,ZA0042_NPL_KUBUN_AMT_FN(A.EXCFLDNBR, '|| CHR(39) || I_SEL_TO || CHR(39) || ', ''B'', ''NOWWONAMT'') AS NOWWONAMT_G   '   -- 현재 현재원금
+             || '       ,ZA0042_NPL_KUBUN_AMT_FN(A.EXCFLDNBR, '|| CHR(39) || I_SEL_TO || CHR(39) || ', ''B'', ''NOWLOCAMT'') AS NOWLOCAMT_G   '   -- 현재 현재법비용
+             || '       ,ZA0042_NPL_KUBUN_AMT_FN(A.EXCFLDNBR, '|| CHR(39) || I_SEL_TO || CHR(39) || ', ''B'', ''NOWWONIJA'') AS NOWWONIJA_G   '   -- 현재 현재미수이자
+             || '       ,ZA0042_NPL_KUBUN_AMT_FN(A.EXCFLDNBR, '|| CHR(39) || I_SEL_TO || CHR(39) || ', ''B'', ''NOWTOTAMT'') AS NOWTOTAMT_G   '   -- 현재 현재합계
+             
+             || '       , DECODE ((SELECT NVL(ENDFLDDAT,''00000000'')                                                      '
+             || '                    FROM NPLBOOMB                                                                         '
+             || '                   WHERE EXCFLDNBR = A.EXCFLDNBR                                                          '
+             || '                     AND CLDISSEQ  = (SELECT MAX(CLDISSEQ)                                                '
+             || '                                        FROM NPLBOOMB                                                     '
+             || '                                       WHERE EXCFLDNBR = A.EXCFLDNBR))                                    '
+             || '                  ,''00000000''                                                                           '
+             || '                  , (SELECT MAX(REPDIVPNO) FROM NPLBOOMD WHERE EXCFLDNBR = A.EXCFLDNBR                    '
+             || '                        AND CLDISSEQ = (SELECT MAX(CLDISSEQ) FROM NPLBOOMD WHERE EXCFLDNBR = A.EXCFLDNBR) '
+             || '                        AND REPDIVPNO < 200 AND REPDIVAYN = ''Y'')                                        '
+             || '                  ,0) AS REPDIVPNO                                                                        ' -- 납부회차(DECODE 화해원장에 마감일자가 없으면 일시납건 제외하고 납부여부가Y인 스케줄 갯수 COUNT) 마감일자가 있으면 0
+             
+             || '       , DECODE ((SELECT NVL(ENDFLDDAT,''00000000'')                                                       '                  
+             || '                    FROM NPLBOOMB                                                                          '
+             || '                   WHERE EXCFLDNBR = A.EXCFLDNBR                                                           '
+             || '                     AND CLDISSEQ  = (SELECT MAX(CLDISSEQ)                                                 '
+             || '                                        FROM NPLBOOMB                                                      '
+             || '                                       WHERE EXCFLDNBR = A.EXCFLDNBR))                                     '
+             || '                  ,''00000000''                                                                            '
+             || '                  , (SELECT REPDIVTNO FROM NPLBOOMB WHERE EXCFLDNBR = A.EXCFLDNBR                          '
+             || '                        AND CLDISSEQ = (SELECT MAX(CLDISSEQ) FROM NPLBOOMB WHERE EXCFLDNBR = A.EXCFLDNBR)) '
+             || '                  ,0) AS REPDIVTNO                                                                         ' -- 화해총회차
+             
+             || '       , DECODE ((SELECT NVL(ENDFLDDAT,''00000000'')                                                       '                  
+             || '                    FROM NPLBOOMB                                                                          '
+             || '                   WHERE EXCFLDNBR = A.EXCFLDNBR                                                           '
+             || '                     AND CLDISSEQ  = (SELECT MAX(CLDISSEQ)                                                 '
+             || '                                        FROM NPLBOOMB                                                      '
+             || '                                       WHERE EXCFLDNBR = A.EXCFLDNBR))                                     '
+             || '                  ,''00000000''                                                                            '
+             || '                  , (SELECT MAX(REPDIVPNO) FROM NPLBOOMD WHERE EXCFLDNBR = A.EXCFLDNBR                     '
+             || '                        AND CLDISSEQ = (SELECT MAX(CLDISSEQ) FROM NPLBOOMD WHERE EXCFLDNBR = A.EXCFLDNBR)  '
+             || '                        AND REPDIVPDT < TO_CHAR(SYSDATE, ''YYYYMMDD'')                                     '
+             || '                        AND REPDIVAYN = ''N'')                                                             '
+             || '                  ,0) AS REPDIVPNO_P                                                                       ' -- 경과회차(총 연체된 회차)
+             
+             || '      , DECODE ((SELECT NVL(ENDFLDDAT,''00000000'')                                                        '                  
+             || '                   FROM NPLBOOMB                                                                           '
+             || '                  WHERE EXCFLDNBR = A.EXCFLDNBR                                                            '
+             || '                    AND CLDISSEQ  = (SELECT MAX(CLDISSEQ)                                                  '
+             || '                                       FROM NPLBOOMB                                                       '
+             || '                                      WHERE EXCFLDNBR = A.EXCFLDNBR))                                      '
+             || '                 ,''00000000''                                                                             '
+             || '                 , (SELECT SUM(REPDIVAMT) FROM NPLBOOMD WHERE EXCFLDNBR = A.EXCFLDNBR                      '
+             || '                       AND CLDISSEQ = (SELECT MAX(CLDISSEQ) FROM NPLBOOMD WHERE EXCFLDNBR = A.EXCFLDNBR)   '
+             || '                       AND REPDIVPDT < TO_CHAR(SYSDATE,''YYYYMMDD'')                                       '
+             || '                       AND REPDIVAYN = ''N'')                                                              '
+             || '                 ,0) AS REPDIVAMT_P                                                                        ' -- 연체금액 (REPDIVAMT_P)
+
+             || '  FROM NPLBOOMA A '
+             || '     ,(SELECT EXCFLDNBR '
+             || '            , (CASE WHEN CLDOWPKND = ''ZA020001'' THEN (CASE WHEN FILFLDSTA = ''CM940003'' THEN ''종결''                                                        '
+             || '                                                  WHEN (SELECT COUNT(*)                                                                            '
+             || '                                                          FROM NPLBOOMB                                                                            '
+             || '                                                         WHERE EXCFLDNBR = X.EXCFLDNBR                                                             '
+             || '                                                           AND CLDISSEQ  = (SELECT MAX(CLDISSEQ) FROM NPLBOOMB WHERE EXCFLDNBR = X.EXCFLDNBR)      '
+             || '                                                           AND SIGPROSTS = ''SY310002''                                                            '
+             || '                                                           AND (ENDFLDDAT = ''00000000'' OR ENDFLDDAT IS NULL)) > 0                                '
+             || '                                                   AND (SELECT COUNT(*)                                                                            '
+             || '                                                          FROM NPLBOOMD                                                                            '
+             || '                                                         WHERE EXCFLDNBR = X.EXCFLDNBR                                                             '
+             || '                                                           AND CLDISSEQ  = (SELECT MAX(CLDISSEQ) FROM NPLBOOMB WHERE EXCFLDNBR = X.EXCFLDNBR)      '
+             || '                                                           AND REPDIVPDT < '||chr(39)||I_SEL_TO||chr(39)
+             || '                                                           AND REPDIVAYN = ''N'') > 0 THEN ''화해연체''                                                '
+             || '                                                  WHEN (SELECT COUNT(*)                                                                            '
+             || '                                                          FROM NPLBOOMB                                                                            '
+             || '                                                         WHERE EXCFLDNBR = X.EXCFLDNBR                                                             '
+             || '                                                           AND CLDISSEQ  = (SELECT MAX(CLDISSEQ) FROM NPLBOOMB WHERE EXCFLDNBR = X.EXCFLDNBR)      '
+             || '                                                           AND SIGPROSTS = ''SY310002''                                                            '
+             || '                                                           AND (ENDFLDDAT = ''00000000'' OR ENDFLDDAT IS NULL)) > 0                                '
+             || '                                                   AND (SELECT COUNT(*)                                                                            '
+             || '                                                          FROM NPLBOOMD                                                                           '
+             || '                                                         WHERE EXCFLDNBR = X.EXCFLDNBR                                                            '
+             || '                                                           AND CLDISSEQ  = (SELECT MAX(CLDISSEQ) FROM NPLBOOMD WHERE EXCFLDNBR = X.EXCFLDNBR)     '
+             || '                                                           AND REPDIVPDT < '||chr(39)||I_SEL_TO||chr(39)
+             || '                                                           AND REPDIVAYN = ''N'') = 0 THEN ''화해정상''                                               '
+             || '                                                  ELSE ''정상''                                                                                           '
+             || '                                                  END)                                                                                                  '
+             || '                    WHEN CLDOWPKND = ''ZA020007'' THEN (CASE WHEN FILFLDSTA = ''CM940003'' THEN ''종결''                                                        '
+             || '                                                  WHEN (SELECT COUNT(*)                                                                            '
+             || '                                                          FROM NPLBOOMB                                                                            '
+             || '                                                         WHERE EXCFLDNBR = X.EXCFLDNBR                                                             '
+             || '                                                           AND CLDISSEQ  = (SELECT MAX(CLDISSEQ) FROM NPLBOOMB WHERE EXCFLDNBR = X.EXCFLDNBR)      '
+             || '                                                           AND SIGPROSTS = ''SY310002''                                                            '
+             || '                                                           AND (ENDFLDDAT = ''00000000'' OR ENDFLDDAT IS NULL)) > 0                                '
+             || '                                                   AND (SELECT COUNT(*)                                                                            '
+             || '                                                          FROM NPLBOOMD                                                                            '
+             || '                                                         WHERE EXCFLDNBR = X.EXCFLDNBR                                                             '
+             || '                                                           AND CLDISSEQ  = (SELECT MAX(CLDISSEQ) FROM NPLBOOMB WHERE EXCFLDNBR = X.EXCFLDNBR)      '
+             || '                                                           AND REPDIVPDT < '||chr(39)||I_SEL_TO||chr(39)
+             || '                                                           AND REPDIVAYN = ''N'') > 0 THEN ''신복연체''                                                '
+             || '                                                  WHEN (SELECT COUNT(*)                                                                                 '
+             || '                                                          FROM NPLBOOMB                                                                            '
+             || '                                                         WHERE EXCFLDNBR = X.EXCFLDNBR                                                             '
+             || '                                                           AND CLDISSEQ  = (SELECT MAX(CLDISSEQ) FROM NPLBOOMB WHERE EXCFLDNBR = X.EXCFLDNBR)      '
+             || '                                                           AND SIGPROSTS = ''SY310002''                                                            '
+             || '                                                           AND (ENDFLDDAT = ''00000000'' OR ENDFLDDAT IS NULL)) > 0                                '
+             || '                                                   AND (SELECT COUNT(*)                                                                            '
+             || '                                                           FROM NPLBOOMD                                                                           '
+             || '                                                          WHERE EXCFLDNBR = X.EXCFLDNBR                                                            '
+             || '                                                            AND CLDISSEQ  = (SELECT MAX(CLDISSEQ) FROM NPLBOOMD WHERE EXCFLDNBR = X.EXCFLDNBR)     '
+             || '                                                            AND REPDIVPDT < '||chr(39)||I_SEL_TO||chr(39)
+             || '                                                            AND REPDIVAYN = ''N'') = 0 THEN ''신복정상''                                               '
+             || '                                                  ELSE ''정상''                                                                                         '
+             || '                                                  END)                                                                                                 '
+             || '                    WHEN CLDOWPKND = ''ZA020003'' THEN (CASE WHEN FILFLDSTA = ''CM940003'' THEN ''종결''                                                        '
+             || '                                                  WHEN (SELECT COUNT(*)                                                                            '
+             || '                                                          FROM NPLBOOMB                                                                            '
+             || '                                                         WHERE EXCFLDNBR = X.EXCFLDNBR                                                             '
+             || '                                                           AND CLDISSEQ  = (SELECT MAX(CLDISSEQ) FROM NPLBOOMB WHERE EXCFLDNBR = X.EXCFLDNBR)      '
+             || '                                                           AND SIGPROSTS = ''SY310002''                                                            '
+             || '                                                           AND (ENDFLDDAT = ''00000000'' OR ENDFLDDAT IS NULL)) > 0                                '
+             || '                                                   AND (SELECT COUNT(*)                                                                            '
+             || '                                                          FROM NPLBOOMD                                                                            '
+             || '                                                         WHERE EXCFLDNBR = X.EXCFLDNBR                                                             '
+             || '                                                           AND CLDISSEQ  = (SELECT MAX(CLDISSEQ) FROM NPLBOOMB WHERE EXCFLDNBR = X.EXCFLDNBR)      '
+             || '                                                           AND REPDIVPDT < '||chr(39)||I_SEL_TO||chr(39)
+             || '                                                           AND REPDIVAYN = ''N'') > 0 THEN ''개회연체''                                                '
+             || '                                                  WHEN (SELECT COUNT(*)                                                                                 '
+             || '                                                          FROM NPLBOOMB                                                                            '
+             || '                                                         WHERE EXCFLDNBR = X.EXCFLDNBR                                                             '
+             || '                                                           AND CLDISSEQ  = (SELECT MAX(CLDISSEQ) FROM NPLBOOMB WHERE EXCFLDNBR = X.EXCFLDNBR)      '
+             || '                                                           AND SIGPROSTS = ''SY310002''                                                            '
+             || '                                                           AND (ENDFLDDAT = ''00000000'' OR ENDFLDDAT IS NULL)) > 0                                '
+             || '                                                   AND (SELECT COUNT(*)                                                                            '
+             || '                                                          FROM NPLBOOMD                                                                           '
+             || '                                                         WHERE EXCFLDNBR = X.EXCFLDNBR                                                            '
+             || '                                                           AND CLDISSEQ  = (SELECT MAX(CLDISSEQ) FROM NPLBOOMD WHERE EXCFLDNBR = X.EXCFLDNBR)     '
+             || '                                                           AND REPDIVPDT < '||chr(39)||I_SEL_TO||chr(39)
+             || '                                                           AND REPDIVAYN = ''N'') = 0 THEN ''개회정상''                                              '
+             || '                                                  ELSE ''정상''                                                                                         '
+             || '                                                  END)                                                                                                '
+             || '            END) AS CLDISDEBS_PRE FROM NPLBOOMA X WHERE 1=1'
+             || '       ) B ' -- B : 채무상태
+             || ' WHERE 1=1 ' 
+             || '   AND A.EXCFLDNBR = B.EXCFLDNBR ';
+             
+    -- 조회기준일 등록일자 비교
+    IF (I_SEL_TO IS NOT NULL) THEN
+        V_SQL := V_SQL || ' AND TO_CHAR(A.RGTFLDDTM,''YYYYMMDD'') <= '||CHR(39)||I_SEL_TO||CHR(39);
+    END IF;
+             
+    -- 검색구분 [EXCFLDNBR : 계약번호 , CUSTMRCDE : 고객번호]
+    IF (I_SEARCH_KUBUN = 'EXCFLDNBR') THEN      -- 계약번호
+        V_SQL := V_SQL || ' AND A.EXCFLDNBR = ' ||CHR(39)||I_KEYWORD||CHR(39);
+    ELSIF (I_SEARCH_KUBUN = 'CUSTMRCDE') THEN   -- 고객번호
+        V_SQL := V_SQL || ' AND A.CUSTMRCDE = ' ||CHR(39)||I_KEYWORD||CHR(39);
+    ELSIF (I_SEARCH_KUBUN = 'NPLBMECDE') THEN   -- 보증인코드
+        V_SQL := V_SQL || ' AND A.EXCFLDNBR IN (SELECT EXCFLDNBR FROM NPLBOOME WHERE CUSTMRCDE = ' ||CHR(39)||I_KEYWORD||CHR(39)|| ') ';
+    ELSIF (I_SEARCH_KUBUN = 'NPLBMENAM') THEN   -- 보증인명
+        V_SQL := V_SQL || ' AND A.EXCFLDNBR IN (SELECT EXCFLDNBR FROM NPLBOOME WHERE CUSTMRCDE IN (SELECT CUSTMRCDE FROM NPLCUSCA WHERE CUSTMRNAM LIKE ' ||CHR(39)||'%'||I_KEYWORD||'%'||CHR(39)|| ')) ';
+    ELSIF (I_SEARCH_KUBUN = 'CLDPURCNO') THEN   -- 매입사계약번호
+        V_SQL := V_SQL || ' AND A.CLDPURCNO = ' ||CHR(39)||I_KEYWORD||CHR(39);
+    ELSIF (I_SEARCH_KUBUN = 'DISPURCNM') THEN   -- 매입처명
+        V_SQL := V_SQL || ' AND (SELECT CUSTMRNAM FROM NPLPURCD WHERE DISPURCNC = A.DISPURCNC) LIKE ' ||CHR(39)||'%'||I_KEYWORD||'%'||CHR(39);
+    ELSIF (I_SEARCH_KUBUN = 'CUSTDEKEY') THEN   -- 채무자키
+        V_SQL := V_SQL || ' AND A.CUSTDEKEY = ' ||CHR(39)||I_KEYWORD||CHR(39);
+    END IF;
+    
+    -- 채권구분 [ZA02]
+    IF (I_CLDOWNKND IS NOT NULL) THEN
+        V_SQL := V_SQL || ' AND A.CLDOWNKND = ' ||CHR(39)||I_CLDOWNKND||CHR(39);
+    END IF;
+    
+    -- 현재채권구분 [ZA02]
+    IF (I_CLDOWPKND IS NOT NULL) THEN
+        V_SQL := V_SQL || ' AND A.CLDOWPKND = ' ||CHR(39)||I_CLDOWPKND||CHR(39);
+    END IF;
+    
+    -- 결재상태 [Y/N]
+    IF (I_SIGPROSTS IS NOT NULL) THEN
+        V_SQL := V_SQL || ' AND A.SIGPROSTS = ' ||CHR(39)||I_SIGPROSTS||CHR(39);
+    END IF;
+    
+    -- 채무상태 (원래는 DB에 있던 CLDISDEBS값으로 조회했지만 채무상태를 SELECT절로 수정하면서 이부분도 수정)
+    IF (I_CLDISDEBS IS NOT NULL) THEN
+        V_SQL := V_SQL || ' AND B.CLDISDEBS_PRE = ' ||CHR(39)||I_CLDISDEBS||CHR(39);
+    END IF;
+    
+    -- 취득분류 [ZA06]
+    IF (I_CLDOCRKND IS NOT NULL) THEN
+        V_SQL := V_SQL || ' AND A.CLDOCRKND = ' ||CHR(39)||I_CLDOCRKND||CHR(39);
+    END IF;
+    
+    -- NPL상세코드 [ZA90]
+    IF (I_NPLDTLCDE IS NOT NULL) THEN
+        V_SQL := V_SQL || ' AND A.NPLDTLCDE = ' ||CHR(39)||I_NPLDTLCDE||CHR(39);
+    END IF;
+    
+    -- 채권종결여부
+    IF (I_CLDISDCYN IS NOT NULL) THEN
+        IF (I_CLDISDCYN = 'Y') THEN
+            V_SQL := V_SQL || ' AND A.CLDISDCYN = ''Y'' ';
+        ELSIF (I_CLDISDCYN = 'N') THEN
+            V_SQL := V_SQL || ' AND A.CLDISDCYN != ''Y'' ';
+        END IF;
+    END IF;
+
+    -- 관리본지점 [CM03]
+    IF (I_MGTMINBRH IS NOT NULL) THEN
+        V_SQL := V_SQL || ' AND A.MGTMINBRH = ' ||CHR(39)||I_MGTMINBRH||CHR(39);
+    END IF;
+
+    -- 부서 [CM04]
+    IF (I_MGTFLDDPT IS NOT NULL) THEN
+        V_SQL := V_SQL || ' AND A.MGTFLDDPT = ' ||CHR(39)||I_MGTFLDDPT||CHR(39);
+    END IF;
+    
+    -- 담당자
+    IF (I_MGTPSNDID IS NOT NULL) THEN
+        V_SQL := V_SQL || ' AND A.MGTPSNDID = ' ||CHR(39)||I_MGTPSNDID||CHR(39);
+    END IF;   
+    
+    -- 일자구분
+    IF (I_DATE_KUBUN = 'RGTFLDDTM') THEN -- 등록일자
+        V_SQL := V_SQL || ' AND TO_CHAR(A.RGTFLDDTM,''YYYYMMDD'') BETWEEN ' || CHR(39) || I_DATE_FROM || CHR(39) || ' AND ' || CHR(39) || I_DATE_TO || CHR(39); 
+    ELSIF (I_DATE_KUBUN = 'CLDPURBSD') THEN   -- 매입일자
+        V_SQL := V_SQL || ' AND A.CLDPURBSD BETWEEN ' || CHR(39) || I_DATE_FROM || CHR(39) || ' AND ' || CHR(39) || I_DATE_TO || CHR(39);
+    ELSIF (I_DATE_KUBUN = 'TRSACTDAT') THEN   -- 이관일자
+        V_SQL := V_SQL || ' AND A.TRSACTDAT BETWEEN ' || CHR(39) || I_DATE_FROM || CHR(39) || ' AND ' || CHR(39) || I_DATE_TO || CHR(39);
+    ELSIF (I_DATE_KUBUN = 'CLDRESDAT') THEN   -- 환매일자
+        V_SQL := V_SQL || ' AND A.CLDRESDAT BETWEEN ' || CHR(39) || I_DATE_FROM || CHR(39) || ' AND ' || CHR(39) || I_DATE_TO || CHR(39);
+    ELSIF (I_DATE_KUBUN = 'RESACCDAT') THEN   -- 환매회계일자
+        V_SQL := V_SQL || ' AND A.RESACCDAT BETWEEN ' || CHR(39) || I_DATE_FROM || CHR(39) || ' AND ' || CHR(39) || I_DATE_TO || CHR(39);
+    ELSIF (I_DATE_KUBUN = 'CLDSELFDT') THEN   -- 매각일자
+        V_SQL := V_SQL || ' AND A.CLDSELFDT BETWEEN ' || CHR(39) || I_DATE_FROM || CHR(39) || ' AND ' || CHR(39) || I_DATE_TO || CHR(39);
+    ELSIF (I_DATE_KUBUN = 'SELACCDAT') THEN   -- 매각회계일자
+        V_SQL := V_SQL || ' AND A.SELACCDAT BETWEEN ' || CHR(39) || I_DATE_FROM || CHR(39) || ' AND ' || CHR(39) || I_DATE_TO || CHR(39);
+    ELSIF (I_DATE_KUBUN = 'SIHENDDAS') THEN   -- 최초시효완성일
+        V_SQL := V_SQL || ' AND A.SIHENDDAS BETWEEN ' || CHR(39) || I_DATE_FROM || CHR(39) || ' AND ' || CHR(39) || I_DATE_TO || CHR(39);
+    ELSIF (I_DATE_KUBUN = 'SIHENDDAT') THEN   -- 시효완성일
+        V_SQL := V_SQL || ' AND A.SIHENDDAT BETWEEN ' || CHR(39) || I_DATE_FROM || CHR(39) || ' AND ' || CHR(39) || I_DATE_TO || CHR(39);
+    ELSIF (I_DATE_KUBUN = 'SIHSTPDAT') THEN   -- 시효중단일
+        V_SQL := V_SQL || ' AND A.SIHSTPDAT BETWEEN ' || CHR(39) || I_DATE_FROM || CHR(39) || ' AND ' || CHR(39) || I_DATE_TO || CHR(39);    
+    END IF;
+    
+    V_SQL := V_SQL || ' ORDER BY A.RGTFLDDTM DESC ';
+
+--    DBMS_OUTPUT.Put_Line('V_SQL = ' || V_SQL);
+
+    OPEN RET_CUR FOR V_SQL;
+    
+    RETURN RET_CUR;
+
+    EXCEPTION
+        WHEN OTHERS THEN
+            RAISE_APPLICATION_ERROR(-20503, '[ZA0030VX_LIST_NPLBOOMA_FN] 부실채권 원장 조회 중 오류'||SQLERRM);
+END;
+/
